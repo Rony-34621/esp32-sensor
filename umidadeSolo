@@ -1,23 +1,62 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <HTTPClient.h>
+#include <time.h>
+#include <Update.h>
 
 // ======================================================
-// CONFIGURACAO DOS PINOS
+// CONFIGURACOES GERAIS
 // ======================================================
+
+// SENSOR
 #define SENSOR_PIN 2
 
-// ======================================================
-// WIFI
-// ======================================================
-const char* ssid = "";
-const char* password = "";
+// OTA
+const char* OTA_USER =
+"admin";
 
-// ======================================================
-// TASMOTA
-// ======================================================
-const char* tasmotaOn  = "http://192.168.15.109/cm?cmnd=Power%20On";
-const char* tasmotaOff = "http://192.168.15.109/cm?cmnd=Power%20Off";
+const char* OTA_PASS =
+"SENHA";
+
+// CALIBRACAO SENSOR
+const int valorSeco     = 3200;
+const int valorMolhado  = 1400;
+
+// WIFI 1
+const char* WIFI_1_SSID = "WIFI1";
+const char* WIFI_1_PASS = "SENHA1";
+
+// WIFI 2
+const char* WIFI_2_SSID = "WIFI2";
+const char* WIFI_2_PASS = "SENHA2";
+
+// API
+const char* API_BASE_URL =
+"http://SEU_SERVIDOR/api";
+
+const char* API_KEY =
+"SUA_CHAVE";
+
+// RELE TASMOTA (COLOQUE SEU ENDEREÇO IP LOCAL)
+const char* RELE_IP =
+"192.168.15.109";
+
+// NTP
+const char* NTP_SERVER =
+"pool.ntp.org";
+
+// TIMEZONE BRASILIA
+const long GMT_OFFSET =
+-3 * 3600;
+
+const int DAYLIGHT_OFFSET = 0;
+
+// INTERVALOS
+const unsigned long INTERVALO_LEITURA =
+30000; // 2 min
+
+// NIVEL MINIMO
+int nivelMinimo = 30;
 
 // ======================================================
 // SERVIDOR WEB
@@ -28,13 +67,28 @@ WebServer server(80);
 // VARIAVEIS GLOBAIS
 // ======================================================
 int umidade = 0;
-int nivelMinimo = 30;
 
 bool bombaLigada = false;
 bool modoManual = false;
 
 unsigned long ultimaLeitura = 0;
-const unsigned long intervaloLeitura = 1000;
+
+// ======================================================
+// TASMOTA URLS
+// ======================================================
+String getTasmotaOn() {
+
+  return "http://" +
+         String(RELE_IP) +
+         "/cm?cmnd=Power%20On";
+}
+
+String getTasmotaOff() {
+
+  return "http://" +
+         String(RELE_IP) +
+         "/cm?cmnd=Power%20Off";
+}
 
 // ======================================================
 // PAGINA WEB
@@ -53,7 +107,7 @@ String gerarPagina() {
 <style>
 
 body{
-  font-family: Arial;
+  font-family:Arial;
   text-align:center;
   background:#f2f2f2;
 }
@@ -77,11 +131,6 @@ input[type=range]{
   width:100%;
 }
 
-.status{
-  font-size:18px;
-  margin-top:10px;
-}
-
 </style>
 
 </head>
@@ -93,11 +142,11 @@ input[type=range]{
 <h2>Monitor de Umidade</h2>
 
 <p>
-<strong>Umidade do solo:</strong>
+<strong>Umidade:</strong>
 <span id="umidade">--</span>%
 </p>
 
-<label>Nivel minimo para ligar bomba:</label><br>
+<label>Nivel minimo:</label>
 
 <input
   type="range"
@@ -112,71 +161,69 @@ input[type=range]{
 </p>
 
 <button onclick="toggleManual()">
-<span id="modo">Modo: Automatico</span>
+<span id="modo">
+Modo: Automatico
+</span>
 </button>
 
 <br>
 
 <button onclick="toggleBomba()">
-Bomba <span id="estado">DESLIGADA</span>
+Bomba
+<span id="estado">
+DESLIGADA
+</span>
 </button>
-
-<p class="status" id="statusText">
-Ultima leitura: agora
-</p>
 
 </div>
 
 <script>
 
-// ==========================================
-// ATUALIZA DADOS
-// ==========================================
 setInterval(() => {
 
   fetch('/data')
   .then(r => r.json())
   .then(data => {
 
-    document.getElementById('umidade').innerText =
-      data.umidade;
+    document.getElementById('umidade')
+    .innerText = data.umidade;
 
-    document.getElementById('estado').innerText =
-      data.bomba ? 'LIGADA' : 'DESLIGADA';
+    document.getElementById('estado')
+    .innerText =
+    data.bomba ?
+    'LIGADA' :
+    'DESLIGADA';
 
-    document.getElementById('modo').innerText =
-      'Modo: ' + (data.manual ? 'Manual' : 'Automatico');
-
-    document.getElementById('statusText').innerText =
-      'Ultima leitura: agora';
+    document.getElementById('modo')
+    .innerText =
+    'Modo: ' +
+    (
+      data.manual ?
+      'Manual' :
+      'Automatico'
+    );
 
   });
 
-}, 1000);
+}, 5000);
 
-// ==========================================
-// AJUSTA NIVEL MINIMO
-// ==========================================
 document.getElementById("nivel")
 .addEventListener("input", function() {
 
-  document.getElementById("nivelVal").innerText =
-    this.value;
+  document.getElementById("nivelVal")
+  .innerText = this.value;
 
-  fetch('/setnivel?valor=' + this.value);
+  fetch(
+    '/setnivel?valor=' +
+    this.value
+  );
 
 });
 
-// ==========================================
-// MODO MANUAL
-// ==========================================
 function toggleManual() {
   fetch('/manual');
 }
 
-// ==========================================
-// LIGA/DESLIGA BOMBA
-// ==========================================
 function toggleBomba() {
   fetch('/toggle');
 }
@@ -188,13 +235,203 @@ function toggleBomba() {
 
 )rawliteral";
 
-  html.replace("%NIVEL%", String(nivelMinimo));
+  html.replace(
+    "%NIVEL%",
+    String(nivelMinimo)
+  );
 
   return html;
 }
 
 // ======================================================
-// FUNCOES HTTP TASMOTA
+// WIFI
+// ======================================================
+bool conectarWiFi(
+  const char* ssid,
+  const char* senha,
+  int timeoutMs
+) {
+
+  WiFi.begin(ssid, senha);
+
+  Serial.print("Conectando em ");
+  Serial.println(ssid);
+
+  unsigned long inicio = millis();
+
+  while (
+    WiFi.status() != WL_CONNECTED &&
+    millis() - inicio < timeoutMs
+  ) {
+
+    delay(500);
+    Serial.print(".");
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+
+    Serial.println("");
+    Serial.println("WiFi conectado!");
+
+    Serial.print("IP: ");
+    Serial.println(WiFi.localIP());
+
+    return true;
+  }
+
+  Serial.println("");
+  Serial.println("Falha na conexao");
+
+  WiFi.disconnect(true);
+
+  return false;
+}
+
+void conectarWiFiMulti() {
+
+  bool conectado = false;
+
+  conectado = conectarWiFi(
+    WIFI_1_SSID,
+    WIFI_1_PASS,
+    10000
+  );
+
+  if (!conectado) {
+
+    Serial.println(
+      "Tentando segunda rede..."
+    );
+
+    conectado = conectarWiFi(
+      WIFI_2_SSID,
+      WIFI_2_PASS,
+      10000
+    );
+  }
+
+  if (!conectado) {
+
+    Serial.println(
+      "Nenhuma rede conectou"
+    );
+  }
+}
+
+// ======================================================
+// NTP
+// ======================================================
+void sincronizarHorario() {
+
+  configTime(
+    GMT_OFFSET,
+    DAYLIGHT_OFFSET,
+    NTP_SERVER
+  );
+
+  struct tm timeinfo;
+
+  if (!getLocalTime(&timeinfo)) {
+
+    Serial.println(
+      "Falha ao sincronizar horario"
+    );
+
+    return;
+  }
+
+  Serial.println(
+    "Horario sincronizado!"
+  );
+}
+
+// ======================================================
+// ENVIO API
+// ======================================================
+void enviarDadosAPI() {
+
+  if (WiFi.status() != WL_CONNECTED) {
+
+    conectarWiFiMulti();
+
+    if (WiFi.status() != WL_CONNECTED) {
+      return;
+    }
+  }
+
+  struct tm timeinfo;
+
+  if (!getLocalTime(&timeinfo)) {
+    return;
+  }
+
+  char horaStr[10];
+  char dataStr[20];
+
+  strftime(
+    horaStr,
+    sizeof(horaStr),
+    "%H:%M",
+    &timeinfo
+  );
+
+  strftime(
+    dataStr,
+    sizeof(dataStr),
+    "%d/%m/%Y",
+    &timeinfo
+  );
+
+  // ==========================================
+  // JSON
+  // ==========================================
+  String json = "{";
+
+  json += "\"hora\":\"" +
+          String(horaStr) + "\",";
+
+  json += "\"data\":\"" +
+          String(dataStr) + "\",";
+
+  json += "\"porcentagem\":" +
+          String(umidade) + ",";
+
+  json += "\"key\":\"" +
+          String(API_KEY) + "\"";
+
+  json += "}";
+
+  HTTPClient http;
+
+  http.begin(API_BASE_URL);
+
+  http.addHeader(
+    "Content-Type",
+    "application/json"
+  );
+
+  int httpCode =
+  http.POST(json);
+
+  Serial.println(
+    "========== API =========="
+  );
+
+  Serial.print("HTTP CODE: ");
+  Serial.println(httpCode);
+
+  Serial.print("JSON: ");
+  Serial.println(json);
+
+  Serial.println(
+    "========================="
+  );
+
+  http.end();
+}
+
+// ======================================================
+// TASMOTA
 // ======================================================
 void ligarBombaTasmota() {
 
@@ -203,12 +440,9 @@ void ligarBombaTasmota() {
 
   HTTPClient http;
 
-  http.begin(tasmotaOn);
+  http.begin(getTasmotaOn());
 
-  int httpCode = http.GET();
-
-  Serial.print("Ligando bomba - HTTP Code: ");
-  Serial.println(httpCode);
+  http.GET();
 
   http.end();
 }
@@ -220,12 +454,9 @@ void desligarBombaTasmota() {
 
   HTTPClient http;
 
-  http.begin(tasmotaOff);
+  http.begin(getTasmotaOff());
 
-  int httpCode = http.GET();
-
-  Serial.print("Desligando bomba - HTTP Code: ");
-  Serial.println(httpCode);
+  http.GET();
 
   http.end();
 }
@@ -234,48 +465,68 @@ void desligarBombaTasmota() {
 // ROTAS WEB
 // ======================================================
 void handleRoot() {
-  server.send(200, "text/html", gerarPagina());
+
+  server.send(
+    200,
+    "text/html",
+    gerarPagina()
+  );
 }
 
 void handleData() {
 
   String json = "{";
 
-  json += "\"umidade\":" + String(umidade) + ",";
-  json += "\"bomba\":" + String(bombaLigada ? "true" : "false") + ",";
-  json += "\"manual\":" + String(modoManual ? "true" : "false");
+  json += "\"umidade\":" +
+          String(umidade) + ",";
+
+  json += "\"bomba\":" +
+          String(
+            bombaLigada ?
+            "true" :
+            "false"
+          ) + ",";
+
+  json += "\"manual\":" +
+          String(
+            modoManual ?
+            "true" :
+            "false"
+          );
 
   json += "}";
 
-  server.send(200, "application/json", json);
+  server.send(
+    200,
+    "application/json",
+    json
+  );
 }
 
 void handleSetNivel() {
 
   if (server.hasArg("valor")) {
 
-    nivelMinimo = server.arg("valor").toInt();
-
-    Serial.print("Nivel minimo ajustado para: ");
-    Serial.println(nivelMinimo);
+    nivelMinimo =
+    server.arg("valor").toInt();
   }
 
-  server.send(200, "text/plain", "OK");
+  server.send(
+    200,
+    "text/plain",
+    "OK"
+  );
 }
 
 void handleManual() {
 
   modoManual = !modoManual;
 
-  Serial.print("Modo manual: ");
-
-  Serial.println(
-    modoManual ?
-    "Ativado" :
-    "Desativado"
+  server.send(
+    200,
+    "text/plain",
+    "OK"
   );
-
-  server.send(200, "text/plain", "OK");
 }
 
 void handleToggle() {
@@ -289,13 +540,11 @@ void handleToggle() {
     desligarBombaTasmota();
   }
 
-  Serial.println(
-    bombaLigada ?
-    "Bomba LIGADA (manual)" :
-    "Bomba DESLIGADA (manual)"
+  server.send(
+    200,
+    "text/plain",
+    "OK"
   );
-
-  server.send(200, "text/plain", "OK");
 }
 
 // ======================================================
@@ -305,79 +554,171 @@ void setup() {
 
   Serial.begin(115200);
 
-  WiFi.begin(ssid, password);
+  // ==========================================
+  // WIFI
+  // ==========================================
+  conectarWiFiMulti();
 
-  Serial.print("Conectando ao WiFi");
+  WiFi.setSleep(true);
 
-  while (WiFi.status() != WL_CONNECTED) {
-
-    delay(500);
-    Serial.print(".");
-    
-    if 
-
-  }
-
-  Serial.println("");
-  Serial.println("WiFi conectado!");
-
-  Serial.print("IP do ESP32: ");
-  Serial.println(WiFi.localIP());
+  // ==========================================
+  // HORARIO
+  // ==========================================
+  sincronizarHorario();
 
   // ==========================================
   // ROTAS
   // ==========================================
   server.on("/", handleRoot);
-  server.on("/data", handleData);
-  server.on("/setnivel", handleSetNivel);
-  server.on("/manual", handleManual);
-  server.on("/toggle", handleToggle);
 
+  server.on(
+    "/data",
+    handleData
+  );
+
+  server.on(
+    "/setnivel",
+    handleSetNivel
+  );
+
+  server.on(
+    "/manual",
+    handleManual
+  );
+
+  server.on(
+    "/toggle",
+    handleToggle
+  );
+
+  // ==========================================
+  // OTA WEB
+  // ==========================================
+  server.on("/update", HTTP_GET, []() {
+
+    server.send(
+      200,
+      "text/html",
+
+      "<form method='POST' action='/update' enctype='multipart/form-data'>"
+      "<input type='file' name='update'>"
+      "<input type='submit' value='Atualizar'>"
+      "</form>"
+    );
+  });
+
+  server.on("/update", HTTP_POST, []() {
+
+ if (
+    !server.authenticate(
+      OTA_USER,
+      OTA_PASS
+    )
+  ) {
+
+    return server.requestAuthentication();
+  }
+
+  server.send(
+    200,
+    "text/html",
+
+    "<form method='POST' action='/update' enctype='multipart/form-data'>"
+    "<input type='file' name='update'>"
+    "<input type='submit' value='Atualizar'>"
+    "</form>"
+  );
+});
+
+server.on("/update", HTTP_POST, []() {
+
+  if (
+    !server.authenticate(
+      OTA_USER,
+      OTA_PASS
+    )
+  ) {
+
+    return server.requestAuthentication();
+  }
+
+  server.send(
+    200,
+    "text/plain",
+    Update.hasError() ?
+    "Falha" :
+    "Sucesso"
+  );
+
+  delay(1000);
+
+  ESP.restart();
+
+}, []() {
+
+  HTTPUpload& upload =
+  server.upload();
+
+  if (
+    upload.status ==
+    UPLOAD_FILE_START
+  ) {
+
+    Update.begin(
+      UPDATE_SIZE_UNKNOWN
+    );
+  }
+
+  else if (
+    upload.status ==
+    UPLOAD_FILE_WRITE
+  ) {
+
+    Update.write(
+      upload.buf,
+      upload.currentSize
+    );
+  }
+
+  else if (
+    upload.status ==
+    UPLOAD_FILE_END
+  ) {
+
+    Update.end(true);
+  }
+});
+
+  // ==========================================
+  // INICIA SERVIDOR
+  // ==========================================
   server.begin();
 
-  Serial.println("Servidor web iniciado");
+  Serial.println(
+    "Servidor iniciado"
+  );
 }
 
 // ======================================================
-// LOOP PRINCIPAL
+// LOOP
 // ======================================================
 void loop() {
 
   server.handleClient();
 
-  // ==========================================
-  // LEITURA DO SENSOR
-  // ==========================================
-  if (millis() - ultimaLeitura > intervaloLeitura) {
+  if (
+    millis() - ultimaLeitura >=
+    INTERVALO_LEITURA
+  ) {
+
+    ultimaLeitura = millis();
 
     // ==========================================
-    // LEITURA ANALOGICA DO SENSOR
+    // LEITURA SENSOR
     // ==========================================
-    //
-    // IMPORTANTE:
-    // Ajuste os valores conforme seu sensor
-    //
-    // Solo seco     -> valor alto
-    // Solo molhado  -> valor baixo
-    //
-    // Valores iniciais de exemplo:
-    //
-    // seco:      3200
-    // molhado:   1400
-    //
-    // ==========================================
+    int leituraBruta =
+    analogRead(SENSOR_PIN);
 
-    int leituraBruta = analogRead(SENSOR_PIN);
-
-    // ==========================================
-    // CALIBRACAO
-    // ==========================================
-    int valorSeco = 3200;
-    int valorMolhado = 1400;
-
-    // ==========================================
-    // CONVERTE PARA %
-    // ==========================================
     umidade = map(
       leituraBruta,
       valorSeco,
@@ -386,56 +727,99 @@ void loop() {
       100
     );
 
-    // LIMITA ENTRE 0 E 100
-    umidade = constrain(umidade, 0, 100);
+    umidade =
+    constrain(umidade, 0, 100);
 
-    ultimaLeitura = millis();
+    // ==========================================
+    // CONTROLE AUTOMATICO
+    // ==========================================
+    if (!modoManual) {
+
+      if (
+        umidade < nivelMinimo &&
+        !bombaLigada
+      ) {
+
+        ligarBombaTasmota();
+
+        bombaLigada = true;
+      }
+
+      if (
+        umidade >= 80 &&
+        bombaLigada
+      ) {
+
+        desligarBombaTasmota();
+
+        bombaLigada = false;
+      }
+    }
+
+    // ==========================================
+    // ENVIO API
+    // ==========================================
+    enviarDadosAPI();
 
     // ==========================================
     // DEBUG SERIAL
     // ==========================================
-    // Pode comentar esse trecho futuramente
-    // ==========================================
+    // struct tm timeinfo;
 
-    Serial.println("========== SENSOR ==========");
+    // if (getLocalTime(&timeinfo)) {
 
-    Serial.print("Leitura ADC: ");
-    Serial.println(leituraBruta);
+    //   char horaStr[10];
+    //   char dataStr[20];
 
-    Serial.print("Umidade calculada: ");
-    Serial.print(umidade);
-    Serial.println("%");
+    //   strftime(
+    //     horaStr,
+    //     sizeof(horaStr),
+    //     "%H:%M:%S",
+    //     &timeinfo
+    //   );
 
-    Serial.println("============================");
-  }
+    //   strftime(
+    //     dataStr,
+    //     sizeof(dataStr),
+    //     "%d/%m/%Y",
+    //     &timeinfo
+    //   );
 
-  // ==================================================
-  // CONTROLE AUTOMATICO
-  // ==================================================
-  if (!modoManual) {
+    //   Serial.println(
+    //     "========== SENSOR =========="
+    //   );
 
-    // ==========================================
-    // LIGA ABAIXO DO MINIMO
-    // ==========================================
-    if (umidade < nivelMinimo && !bombaLigada) {
+    //   Serial.print("Horario: ");
+    //   Serial.print(dataStr);
+    //   Serial.print(" ");
+    //   Serial.println(horaStr);
 
-      ligarBombaTasmota();
+    //   Serial.print("ADC: ");
+    //   Serial.println(leituraBruta);
 
-      bombaLigada = true;
+    //   Serial.print("Umidade: ");
+    //   Serial.print(umidade);
+    //   Serial.println("%");
 
-      Serial.println("Bomba LIGADA (automatico)");
-    }
+    //   Serial.print("Modo: ");
 
-    // ==========================================
-    // DESLIGA EM 80%
-    // ==========================================
-    if (umidade >= 80 && bombaLigada) {
+    //   Serial.println(
+    //     modoManual ?
+    //     "Manual" :
+    //     "Automatico"
+    //   );
 
-      desligarBombaTasmota();
+    //   Serial.print("Bomba: ");
 
-      bombaLigada = false;
+    //   Serial.println(
+    //     bombaLigada ?
+    //     "LIGADA" :
+    //     "DESLIGADA"
+    //   );
 
-      Serial.println("Bomba DESLIGADA (automatico)");
-    }
+    //   Serial.println(
+    //     "============================"
+    //   );
+    // }
   }
 }
